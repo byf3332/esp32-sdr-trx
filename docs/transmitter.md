@@ -108,6 +108,11 @@ python3 scripts/m17_iq_make.py --wav speech.wav --src <your call sign> --out m17
 * Silence in the input (zeros) holds the last frequency; the carrier stays on until the file ends.
 * The measured quality of the chain (host and the chip's quantisation, model of the firmware): symbols of a 4800 symbol/s 4FSK signal with RRC filtering come out
   without error, and the error inside 4 kHz is about 45 dB below the signal.
+* **On the air** (M17 at 2345 MHz, a PlutoSDR as the receiver, one board): the receive chain of pluto-tx decodes the link setup frames and the voice, also at the end of a
+  120 s transmission. The occupied bandwidth is 9.1 kHz (99 %). **Outside the channel the transmitter is not clean:** the 9 kHz windows next to the channel are 37 dB (±12.5 kHz) and
+  46 dB (±25 kHz) below the channel power, where the ideal signal has 48 and 90 dB; further out the floor stays at -53 to -58 dBc up to ±200 kHz. Lines at the update rate are small (-68 to
+  -73 dBc at ±40 kHz). Harmonics were not measured. **The carrier drifts** (1.5 kHz down in 106 s, with `--thermal` on); an M17 receiver follows that, a narrow filter may not.
+  Details and the setup: [docs/research/PLAN-M17.md](research/PLAN-M17.md), section 10.
 * **Latency:** the carrier comes on only when the chip's ring holds 4000 records (100 ms); the first 100 ms of the signal wait in it. Ending a transmission takes as long as the
   ring needs to play out (about 125 ms).
 * There is **no call sign added**: an M17 signal carries its own in the link setup frame (`--src` of the script); put it in whatever else you send, as the rules of your licence say.

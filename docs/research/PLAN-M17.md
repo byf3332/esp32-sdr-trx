@@ -1,7 +1,7 @@
 # Plan: M17 (and every other constant-envelope IQ mode of pluto-tx) through the ESP32-S3 transmitter
 
 Branch: `feature/m17`, from `main` (the polar transmitter with RTTY and thermal correction is in the product; the I/Q engine and `-m lora` stay on `research/iq-tx`).
-Status: plan, nothing implemented. Written 2026-10-05 after reading `pluto-tx` (read-only repository, available on the development machine) and this repository.
+Status (2026-10-11): **work packages 1 to 4 are done and tested on air** (see "Status of the work packages" at the end); the pluto-tx device (work packages 5 and 6) is next and is built directly in the `pluto-tx` repository on its own branch, not as a patch set. Written 2026-10-05 after reading `pluto-tx` (available on the development machine) and this repository.
 
 ## 0. Goal, scope, non-goals
 
@@ -9,7 +9,7 @@ Status: plan, nothing implemented. Written 2026-10-05 after reading `pluto-tx` (
 
 **Scope.** Host-side encoding; the chip only plays frequency/gain records, as it does for FM, SSB and RTTY. 13 cm only (2320..2450 MHz). Receiving is done with a PlutoSDR and the M17 receiver of `pluto-tx` (the ESP32 receiver is an optional later check).
 
-**Non-goals.** No M17 coder on the chip (it would be a port of codec2 and the FEC chain to bare-metal firmware for no gain). No I/Q engine (M17 is narrowband and constant envelope: the engine runs 640 times faster than the signal needs). No SSB-type modes in the first version (FT8, JS8, PSK31, Digitext, FreeDV, RADE, SSB: non-constant envelope, see section 6). No change of the firmware, unless a test shows it is needed.
+**Non-goals.** No M17 coder on the chip (it would be a port of codec2 and the FEC chain to bare-metal firmware for no gain). No I/Q engine (M17 is narrowband and constant envelope: the engine runs 640 times faster than the signal needs). No SSB-type modes in the first version (FT8, JS8, PSK31, Digitext, FreeDV, RADE, SSB: non-constant envelope, see section 6). No change of the firmware, unless a test shows it is needed (two candidates are named in section 7: the margin of the PLL word's low byte, and the prefill).
 
 ## 1. What was found
 
@@ -68,7 +68,7 @@ pluto-tx flowgraph (unchanged)            espdr package (pure numpy + pyserial, 
 
 * **IQ -> polar.** `f[n] = fs/(2 pi) * arg(x[n] * conj(x[n-1]))`, averaged over `fs / 40 000` samples to one frequency per record; the state (last sample) survives block boundaries. The result goes into `FskModulator.process(offsets_hz)` (static offset from `choose_lo`/ppm, clamp via `limit_q4`). Amplitude: **constant gain code from the power stage**; `|x|` is ignored in the default (constant-envelope) mode. While unkeyed the sink discards the samples.
 * **Range.** M17 peaks about +-3.05 kHz plus the static shift that `choose_lo` may add (up to 22 kHz as written today); records carry about +-19 kHz. The LO choice must therefore reserve the deviation (`choose_lo(max_offset_steps=...)`); a test covers every channel centre of the band.
-* **Time base.** The chip plays 40 000 records/s from its crystal; the flowgraph source is the audio clock or a file. The sink paces to the wall clock when unkeyed, and to the chip's ring fill when keyed (status frames every 5 ms), with a slip control that inserts or drops one record when the fill drifts (16 ppm drift of the clocks = one record every 1.5 s at worst). Ring target fill goes down from 8000 records to about 2000 (50 ms) to keep the latency small.
+* **Time base.** The chip plays 40 000 records/s from its crystal; the flowgraph source is the audio clock or a file. The sink paces to the wall clock when unkeyed, and to the chip's ring fill when keyed (status frames every 5 ms), with a slip control that inserts or drops one record when the fill drifts (16 ppm drift of the clocks = one record every 1.5 s at worst). Ring target fill: **not below 4000 records**, because the firmware keys the carrier only when the ring holds `TX_PREFILL` = 4000 records (100 ms; it ends the session without a carrier after 3 s otherwise), so the latency from key to carrier is at least 100 ms. The `Streamer` uses 5000 (125 ms).
 * **PTT semantics.** `key_ptt()` -> `pre_key()`; `unkey_ptt()` -> (M17: the existing EOT hold of 0.4 s in the flowgraph) -> `post_unkey()`. The extra latency of the ring (about 100 to 200 ms in total) is added to the unkey time, never cut off.
 * **Frequency accuracy.** The PLL step (30 MHz / 65536 = 457.76 Hz) is exact; the crystal scale error (16 ppm) is irrelevant for the deviation. The absolute offset (+12.5 kHz) is removed with `set_frequency_correction_ppm` (Pluto side) or the receiver's DC averaging (the M17 decoder in `pluto_advanced_rx` averages over 0.1 s).
 
@@ -129,9 +129,43 @@ Each package ends with a commit on `feature/m17` and its tests; estimates are fo
 
 * Amateur radio licence required; 13 cm only; the callsign is in the M17 LSF (source field), **no encryption** (the `m17_coder` parameters for scrambler/AES stay empty as in `pluto-tx`).
 * Tests cabled with attenuation or at 50 cm with the Pluto's gain low; the chip's output is microwatts, which does not change who is responsible.
-* The firmware limits stay (2320..2450 MHz, session length `TX_OP_LIMIT`, watchdog 500 ms). The adapter adds: no key without an accepted licence notice, E-STOP ends the session in under 100 ms (abort path of the `Streamer`), `force_safe_state` on every exit path.
+* The firmware limits stay (2320..2450 MHz, session length `TX_OP_LIMIT`, watchdog 500 ms). The adapter adds: no key without an accepted licence notice, E-STOP ends the session through the abort path of the `Streamer`; the chip plays what its ring holds before it sees the end record, so the carrier is gone after about 125 ms, not instantly, `force_safe_state` on every exit path.
 
 ## 9. Branch layout and definition of done
 
 Commits: WP1, WP2, WP3 (each with tests and docs) -> hardware test H1 -> WP4 -> WP5/WP6. `feature/m17` merges into `main` after H1, H3, H5 and H6 pass and `pytest` and the docs tests are green; the adapter patch set is submitted to `pluto-tx` on the development machine.
 Done when: (1) `espdr-tx -m iq` plays an M17 IQ file and a PlutoSDR decodes it; (2) `pluto-tx --device espdr` in M17 mode transmits a voice file and live microphone audio, decoded by the M17 receiver of `pluto-tx`; (3) FM works through the same device; (4) the mode matrix is documented and the unsupported modes are greyed out with a reason; (5) the spectrum (H3) and the PTT behaviour (H6) are written down in `docs/transmitter.md`.
+
+
+## 10. Status of the work packages (2026-10-11)
+
+| WP | State |
+|---|---|
+| 1 `espdr.polar` | done (`src/espdr/polar.py`, `tests/test_polar.py`) |
+| 2 `Streamer` | done (`txlink.Streamer`, `tests/test_streamer.py`); not used by `espdr-tx` yet, it is the base of the pluto-tx device |
+| 3 shared helpers | done: `espdr.config` (licence acceptance, thermal model lookup), `txlink.plan_lo` |
+| 4 `espdr-tx -m iq` | done, with `scripts/m17_iq_make.py` and `scripts/m17_iq_check.py` |
+| 5, 6 pluto-tx device | not started |
+
+What the work turned up, and what the plan above says differently:
+
+* **The ring cannot be kept at 2000 records**; see the time base in section 4. Latency from key to carrier is at least 100 ms.
+* **Abort is not instant**: about the ring fill (125 ms).
+* **About 10 % of the frequencies cannot be reached exactly** with a reserve of 4 kHz for the deviation. The firmware requires the low byte of the PLL word to stay in 48 .. 207 (`TX_LOW_MARGIN`), which can move the LO by up to 22 kHz; a constant in every record makes up for that, but the records reach only +-19.2 kHz, of which the signal needs its share. The tool names the frequency it really gets (`txlink.plan_lo`). A smaller margin in the firmware would remove this (the signal needs about 9 steps of 457 Hz, not 48); that is a firmware change and not part of this plan.
+* **`pluto-tx` cannot build its flowgraph for a device that runs at 80 kHz**: its LoRa branch designs a filter that does not exist at that rate (`firdes check failed: transition_width > 0`). The device in pluto-tx needs the mode gating of section 6 before the flowgraph is built, or the LoRa branch must be skipped for it. `scripts/m17_iq_make.py` runs pluto-tx's chain at 2.5 MS/s and brings the result down to 80 kHz.
+
+### Measurements on air (hardware tests H1, H3, H5)
+
+ESP32-S3 (the board of the thermal model `thermal-5C85035519`), power setting -6 dB, 2345 MHz, a PlutoSDR as the receiver with its manual RX gain at 40 dB (first run) and 28 dB (the others); distance and antennas were those of the bench and were not recorded, so levels in dBFS are not comparable between setups. M17 test signal of 4 s with the call sign DA2JH, repeated 29 times for the long run. The transmissions were made with a transmit permission for this frequency.
+
+| Test | Result |
+|---|---|
+| H1 decode | the receive chain of pluto-tx decodes the link setup frames (source `DA2JH`, destination `@ALL`) and the voice: 15 and 16 frames of two runs of 4 s, 3.96 s and 4.00 s of voice |
+| frequency | the board transmits high: +4.4 to +4.6 kHz in the two first runs (chip 27 and 33 C at the start), +2.6 kHz at the start of the long run (chip 37.6 C). That is about `--ppm 1.9` to 1.1; it depends on the chip's temperature, so `--ppm` is a rough correction. See H5 for the drift |
+| H3, occupied bandwidth | 99 % of the power inside 9.1 kHz |
+| H3, neighbours (9 kHz windows, against the signal's channel power) | -37.4 dBc at +-12.5 kHz, -46.2 at +-25 kHz, -56.8 at +-50 kHz, -57.9 at +-100 kHz, -53.6 at +-200 kHz. The ideal signal of the IQ file has -47.8 dBc and -89.8 dBc at +-12.5 and +-25 kHz, so the transmitter adds noise outside the channel (probably the quantisation of the PLL steps; not shown by these measurements). The values did not change when the receiver's gain was lowered by 12 dB, so they belong to the transmitter and not to the Pluto. |
+| H3, lines at the update rate | -68 to -73 dBc at +-40 kHz, -77 to -85 dBc at +-80 kHz |
+| H3, harmonics | **not measured** (the Pluto's range here was limited to the 2 MHz around the carrier) |
+| H5, 120 s (29 repetitions of the 4 s signal, `--thermal auto` with the board's model) | **no underrun, no late update**; recordings of 6 s at +2, +55 and +108 s: 22, 23 and 23 link setup frames and 5.8, 5.96 and 5.92 s of voice decoded, the signal level -14.4, -14.7, -15.2 dBFS, the neighbour levels unchanged (-38.0 dBc at +-12.5 kHz, -46.3 dBc at +-25 kHz). **The centre frequency drifts down by 1.5 kHz in 106 s** (error +2552, +1819, +1093 Hz against the wanted 2345.0000 MHz) although the thermal correction was on; the M17 decoder follows that (it removes the average offset over 0.1 s). A first run of the same kind had the recordings of its end window at the wrong time (a mistake of the recording script; the transmitter reported no underrun either) and is not counted. Not measured: 600 s, the drift without the correction. |
+
+Not measured: harmonics, the power in watts, behaviour with other boards, FM through the IQ path, 600 s runs, PTT cycles (H6), live microphone (H7).
