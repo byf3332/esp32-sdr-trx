@@ -50,3 +50,34 @@ def test_several_bridges_need_a_choice(monkeypatch):
     monkeypatch.setattr(board, "bridge_ports", lambda: ["/dev/ttyUSB0", "/dev/ttyUSB1"])
     with pytest.raises(board.BoardError, match="--bridge-port"):
         board.find_bridge()
+
+
+def test_esptool_is_run_as_a_module_when_this_python_has_it(monkeypatch):
+    import importlib.util
+    import sys
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "esptool" else None)
+    monkeypatch.setattr("shutil.which", lambda name: pytest.fail("the PATH is not needed"))
+    assert board.esptool_command() == [sys.executable, "-m", "esptool"]
+
+
+def test_esptool_falls_back_to_the_program_on_the_path(monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr("shutil.which", lambda name: "/home/u/.local/bin/esptool" if name == "esptool" else None)
+    assert board.esptool_command() == ["/home/u/.local/bin/esptool"]
+
+
+def test_without_esptool_the_error_says_how_to_get_it(monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(board.BoardError, match="pipx install esptool"):
+        board.esptool_command()
+
+
+def test_the_esptool_command_is_built_from_the_lookup(monkeypatch):
+    seen = []
+    monkeypatch.setattr(board, "esptool_command", lambda: ["/x/esptool"])
+    monkeypatch.setattr("subprocess.run", lambda cmd, **k: seen.append(cmd) or type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    board._esptool(["--port", "/dev/ttyUSB0", "chip-id"], "testing")
+    assert seen == [["/x/esptool", "--chip", "esp32s3", "--port", "/dev/ttyUSB0", "chip-id"]]

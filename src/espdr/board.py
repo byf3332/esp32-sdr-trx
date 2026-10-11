@@ -105,8 +105,23 @@ def image_path(kind, override=None):
 VERBOSE = False     # set by the command lines' -v: show esptool's own output
 
 
+def esptool_command():
+    """How to run esptool 5 or newer: the module in this Python if there is one, else the `esptool` program on the PATH (what `pipx install
+    esptool` provides, for a Python that pip may not write to). Raises BoardError with the way to get it if there is neither."""
+    import importlib.util
+    import shutil
+    if importlib.util.find_spec("esptool") is not None:
+        return [sys.executable, "-m", "esptool"]
+    exe = shutil.which("esptool")
+    if exe:
+        return [exe]
+    raise BoardError("esptool (version 5 or newer) is needed to load the firmware into the board and was not found. Install it with "
+                     "`pipx install esptool` (or `pip install esptool` in a virtual environment); the esptool package of Debian and Ubuntu "
+                     "is version 4 and does not work here")
+
+
 def _esptool(args, what):
-    cmd = [sys.executable, "-m", "esptool", "--chip", "esp32s3"] + args
+    cmd = esptool_command() + ["--chip", "esp32s3"] + args
     try:
         if VERBOSE:
             rc = subprocess.call(cmd)
