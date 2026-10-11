@@ -20,7 +20,7 @@ document. This project uses both, on a plain dev board with a USB cable and no F
 | Command | `espdr-rx` | `espdr-tx` |
 | Range | 1.84 to 2.79 GHz | 2.32 to 2.45 GHz |
 | Bandwidth | 250 ksps (±100 kHz) or 333 ksps (±133 kHz) | voice, 300 to 3000 Hz; RTTY 170 Hz shift |
-| Modes | rtl_tcp server | FM (±2.5 kHz), USB, LSB, RTTY |
+| Modes | rtl_tcp server | FM (±2.5 kHz), USB, LSB, RTTY, IQ input with a constant envelope (M17, FSK) |
 | Sources | the Wi-Fi front end | WAV file, `-` (pipe), sound card; RTTY: text or text file |
 | Status | stable, one board tested | experimental, one board tested |
 

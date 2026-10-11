@@ -1,4 +1,4 @@
-# The transmitter: FM and SSB voice and RTTY from an ESP32-S3
+# The transmitter: FM and SSB voice, RTTY and constant-envelope IQ signals from an ESP32-S3
 
 `espdr-tx` sends narrowband FM or single-sideband voice, or RTTY text, from an ESP32-S3 board on the 13 cm band (2320 to 2450 MHz). It uses the chip's Wi-Fi test tone, which can be steered in frequency and amplitude (polar modulation), and that is enough for voice and for RTTY.
 The chip also has an I/Q playback engine (see the research notes) that this transmitter does not use. This page is the user guide. The command line reference
@@ -57,6 +57,7 @@ voice sits 300 to 2700 Hz above it (LSB: below).
 | `-m usb` | upper sideband, polar modulation, 5 % pilot carrier by default | weak signal work above 10 MHz is USB by convention |
 | `-m lsb` | lower sideband | |
 | `-m rtty` | text as two-tone FSK (Baudot, 45.45 baud, 170 Hz shift by default): true FSK, the amplitude stays constant | RTTY; the tones are those of the RTTY mode of pluto-tx |
+| `-m iq` | a complex baseband signal with a constant envelope from a file or a pipe: only its frequency is sent | M17, other FSK modes, FM; see [IQ input](#iq-input--m-iq) |
 
 Options: `--deviation HZ` (FM), `--no-preemph`, `--carrier FRACTION` (SSB: the carrier's share of the peak envelope; `0` suppresses it fully,
 `0.5` or more makes a signal that an AM receiver also copies), `--gain DB` and `--no-agc` for the audio level. The audio is band-limited, passes
@@ -85,6 +86,31 @@ as US Baudot with letters and figures shifts (a space returns to letters), 1 sta
 In `--text` the typed characters `\r` and `\n` are sent as carriage return and line feed; `--text-file` (`-` for stdin) turns line ends into CR LF. The steps between the tones are
 rounded over 0.2 bit (`--edge`; `0` makes abrupt steps; the measurements below show no difference in the spectrum). Start the text with a few `RY` so that a decoder with automatic tuning has the two tones to lock on: the first seconds of a transmission can be lost. **The tool adds no call sign or identification: put yours in the text.** The audio options, `--deviation`,
 `--carrier` and `--duration` do not apply to RTTY.
+
+## IQ input (`-m iq`)
+
+The chip cannot play I/Q samples through this transmitter, but a signal with a **constant envelope** is fully described by its instantaneous frequency. `-m iq` reads
+complex baseband samples, takes the frequency out of them (`arg(x[n] · conj(x[n-1]))`, averaged to the 40 000 updates a second) and sends it as the frequency field of the
+records, with a constant gain code. The signal's envelope is ignored. That is exactly right for M17 (4FSK), other FSK modes and FM; it is **wrong for anything with
+amplitude modulation** (SSB, PSK, FT8-type modes): do not use it for those.
+
+```sh
+espdr-tx -f 2350 -m iq -i m17.cf32 --iq-rate 80000 --power -12                      # a file of float32 I/Q pairs, centred on -f
+some-iq-source | espdr-tx -f 2350 -m iq -i - --iq-rate 80000 --iq-format cs16        # a pipe
+python3 scripts/m17_iq_make.py --wav speech.wav --src <your call sign> --out m17.cf32   # M17 with the transmit chain of pluto-tx (needs it installed)
+```
+
+* `--iq-rate` is the sample rate of the input (at least the update rate; 80 000 is convenient for M17). `--iq-format` is `cf32` (default), `cs16` or `cs8`.
+* The signal is centred on `-f`. The PLL word has to leave room for the modulation, which moves the LO by up to 22 kHz, and a constant in every record makes up for that;
+  `--iq-deviation` (default 4000 Hz, enough for M17) keeps that much of the records' ±19.2 kHz range free for the signal itself. For about **10 % of the frequencies**
+  (the PLL word's low byte close to its ends) that does not suffice and the signal comes out a few kHz off; the tool says so and tells where the signal really is.
+  Change `-f` by a few kHz, or tune your receiver to the frequency it names. `--ppm` and `--thermal` work as for the other modes.
+* Silence in the input (zeros) holds the last frequency; the carrier stays on until the file ends.
+* The measured quality of the chain (host and the chip's quantisation, model of the firmware): symbols of a 4800 symbol/s 4FSK signal with RRC filtering come out
+  without error, and the error inside 4 kHz is about 45 dB below the signal.
+* **Latency:** the carrier comes on only when the chip's ring holds 4000 records (100 ms); the first 100 ms of the signal wait in it. Ending a transmission takes as long as the
+  ring needs to play out (about 125 ms).
+* There is **no call sign added**: an M17 signal carries its own in the link setup frame (`--src` of the script); put it in whatever else you send, as the rules of your licence say.
 
 ## Thermal drift (`--thermal`)
 

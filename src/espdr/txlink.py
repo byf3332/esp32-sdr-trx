@@ -4,6 +4,8 @@ import struct
 import time
 import zlib
 
+import numpy as np
+
 from . import nb
 
 TX_OP_LO, TX_OP_RATE, TX_OP_DRIFT, TX_OP_LIMIT, TX_OP_BEGIN, TX_OP_END, TX_OP_TEMP = 40, 41, 42, 43, 44, 45, 46
@@ -43,6 +45,26 @@ def choose_lo(hz, max_offset_steps=44):
             if TX_LOW_MARGIN <= low <= 255 - TX_LOW_MARGIN:
                 return cand, cand - hz
     raise TxError("no usable LO frequency near the request")
+
+
+def plan_lo(center_hz, ppm=0.0, reserve_hz=0.0):
+    """Where to put the LO for a signal centred on `center_hz`, and what the records have to add. The PLL word's low byte must leave room
+    for the modulation (`choose_lo`), which moves the LO by up to 22 kHz; a constant in every record (`static_hz`) makes up for that
+    move. The records reach +-19.2 kHz (`txmodes.MAX_Q4`), of which `reserve_hz` is kept free for the signal's own deviation. `ppm` is the
+    board's crystal error (positive: the board transmits too high), as for `--ppm`.
+
+    Returns a dict: `lo_hz` (the LO to give the chip, in steps of 100 Hz), `static_hz` (a whole number of record units), `center_hz` (the
+    centre the signal really gets), `miss_hz` (that against the wanted one, nonzero only when the move was too large for the records)."""
+    from . import txmodes
+    k = 1.0 + ppm * 1e-6
+    lo_hz, _ = choose_lo(center_hz / k)
+    lo_real = word_hz(lo_word(lo_hz)) * k
+    unit = txmodes.Q4_HZ * k                                   # one record unit on the air
+    limit = txmodes.MAX_Q4 - int(np.ceil(reserve_hz / unit))
+    static_q4 = int(round((center_hz - lo_real) / unit))
+    static_q4 = min(max(static_q4, -limit), limit)
+    real = lo_real + static_q4 * unit
+    return dict(lo_hz=lo_hz, static_hz=static_q4 * txmodes.Q4_HZ, center_hz=real, miss_hz=real - center_hz)
 
 
 class Frames:

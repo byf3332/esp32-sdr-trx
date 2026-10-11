@@ -1,6 +1,5 @@
-"""espdr-tx: transmit FM or SSB voice, or RTTY, from an ESP32-S3 board on the 13 cm band."""
+"""espdr-tx: transmit FM or SSB voice, RTTY, or a constant-envelope IQ signal (M17, FSK, FM) from an ESP32-S3 board on the 13 cm band."""
 import argparse
-import os
 import queue
 import re
 import signal
@@ -9,14 +8,8 @@ import threading
 import time
 from pathlib import Path
 
-from . import __version__, audio, board, nb, rtty, txlink, txmodes
-
-LICENCE_NOTICE = """\
-Transmitting takes an amateur radio licence, and you are responsible for what you send. This transmitter is a Wi-Fi chip's
-test tone, steered in frequency and amplitude; it was measured on one board only. Its power is not calibrated (some microwatts
-at the antenna of a plain dev board, an estimate), its harmonics and spurious emissions were not measured, and its frequency
-is only as good as the board's crystal (up to +-24 kHz; correct it with --ppm). It sends only inside 2320..2450 MHz.
-"""
+from . import __version__, audio, board, config, iq, nb, polar, rtty, txlink, txmodes
+from .config import LICENCE_NOTICE
 
 EPILOG = """\
 examples:
@@ -28,6 +21,7 @@ examples:
   sox music.mp3 -t wav - | espdr-tx -f 2350 -i -             a WAV stream from a pipe
   espdr-tx -f 2350 --test-tone 1000 --duration 5             a 1 kHz tone for 5 seconds
   espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE TEST"       RTTY, 45.45 baud, 170 Hz shift (true FSK)
+  espdr-tx -f 2350 -m iq -i m17.cf32 --iq-rate 80000         a recorded constant-envelope IQ signal (M17, FSK, FM)
   espdr-tx -f 2350 -i speech.wav --dry-run                   show what would happen, send nothing
   espdr-tx --list-devices                                    list sound card inputs
 
@@ -38,18 +32,15 @@ automatically when it is not running (this needs the board's UART USB port as we
 
 
 def _config_dir():
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "espdr"
+    return config.config_dir()
 
 
 def _licence_accepted():
-    return (_config_dir() / "licence-accepted").exists()
+    return config.licence_accepted()
 
 
 def _accept_licence():
-    d = _config_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "licence-accepted").write_text(f"accepted with espdr-tx {__version__}\n")
+    config.accept_licence(__version__)
 
 
 def build_parser():
@@ -58,9 +49,10 @@ def build_parser():
     p.add_argument("-V", "--version", action="version", version=f"espdr-tx {__version__}")
     main = p.add_argument_group("what to send")
     main.add_argument("-f", "--freq", type=float, metavar="MHZ", help="carrier frequency in MHz (2320 .. 2450); required")
-    main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb", "rtty"), default="fm",
-                      help="fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone FSK, the audio, FM and SSB options "
-                           "and --duration do not apply (default fm)")
+    main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb", "rtty", "iq"), default="fm",
+                      help="fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone FSK; iq: a complex baseband signal "
+                           "with a constant envelope (M17, FSK, FM) from a file or a pipe, only its frequency is sent; for rtty and iq the "
+                           "audio, FM and SSB options and --duration do not apply (default fm)")
     src = p.add_argument_group("audio source")
     src.add_argument("-i", "--input", metavar="SOURCE",
                      help="a WAV file, '-' for a pipe on stdin (a WAV stream or raw samples), or 'soundcard' / 'soundcard:DEVICE' "
@@ -104,6 +96,14 @@ def build_parser():
     rt.add_argument("--repeat-count", type=int, default=1, metavar="N", help="send the text N times, 1 .. 999 (default 1)")
     rt.add_argument("--repeat-interval", type=float, default=10.0, metavar="SECONDS",
                     help="pause between two transmissions, 1 .. 86400; the transmitter is off in between (default 10)")
+    iqg = p.add_argument_group("IQ input (-m iq)")
+    iqg.add_argument("--iq-rate", type=float, metavar="HZ", help="sample rate of the IQ input, at least the update rate; required with -m iq. "
+                                                                  "The signal is centred on -f; its envelope is ignored")
+    iqg.add_argument("--iq-format", choices=sorted(iq.FORMATS), default="cf32", help="sample format of the IQ input: cf32 (float32 I and Q, "
+                                                                                     "GNU Radio complex), cs16 or cs8 (default cf32)")
+    iqg.add_argument("--iq-deviation", type=float, default=4000.0, metavar="HZ",
+                     help="the largest frequency excursion of the signal, 0 .. 15000: the transmitter keeps this much of its +-19 kHz range free "
+                          "when it moves the LO (default 4000, enough for M17)")
     run = p.add_argument_group("session")
     run.add_argument("--duration", type=float, metavar="SECONDS", help="stop after this many seconds (default: until the source ends)")
     run.add_argument("--update-rate", type=int, default=40000, metavar="HZ", help="records per second sent to the chip, 8000 .. 40000 (default 40000)")
@@ -132,6 +132,8 @@ def build_parser():
 
 
 def _modulator(args, power_db, plan=None):
+    if args.mode == "iq":
+        return polar.IqModulator(args.iq_rate, rate=args.update_rate, power_db=power_db, static_hz=plan["static_hz"])
     if args.mode == "rtty":
         return txmodes.FskModulator(rate=args.update_rate, power_db=power_db, static_hz=plan["static_hz"])
     if args.mode == "fm":
@@ -214,22 +216,34 @@ def _rtty_plan(args):
                 shift_real=shift_q4 * unit, miss_hz=low_real - low)
 
 
+def _check_iq(args):
+    """Arguments of -m iq."""
+    if not args.input or args.input == "soundcard" or args.input.startswith("soundcard:") or args.test_tone:
+        raise SystemExit("espdr-tx: -m iq reads a file or '-' (a pipe) with -i; a sound card and --test-tone are for the audio modes")
+    if not args.iq_rate:
+        raise SystemExit("espdr-tx: -m iq needs --iq-rate, the sample rate of the IQ input")
+    if args.iq_rate < args.update_rate:
+        raise SystemExit(f"espdr-tx: --iq-rate must be at least the update rate ({args.update_rate} Hz)")
+    if args.iq_rate > 20e6:
+        raise SystemExit("espdr-tx: --iq-rate above 20 MHz is not supported")
+    if not 0 <= args.iq_deviation <= 15000:
+        raise SystemExit("espdr-tx: --iq-deviation must be between 0 and 15000")
+
+
+def _iq_plan(args):
+    """Where the LO goes and what the records add so that the signal sits on -f (txlink.plan_lo), with room left for its deviation."""
+    p = txlink.plan_lo(args.freq * 1e6, args.ppm, args.iq_deviation)
+    if not txlink.TX_MIN_HZ <= p["lo_hz"] <= txlink.TX_MAX_HZ:
+        raise SystemExit(f"espdr-tx: {args.freq:g} MHz is too close to the edge of 2320 .. 2450 MHz")
+    return p
+
+
 def _model_names(args):
-    """The names of the thermal model files of the board, best first: thermal-<serial number of its USB-UART bridge>.json, then thermal.json.
-    (The native port reports the same serial number on every board while the firmware runs, the bridge's differs.) With several boards attached
-    the bridge must be named with --bridge-port."""
-    from serial.tools import list_ports
-    bridges = [p for p in list_ports.comports() if (p.vid, p.pid) in board.BRIDGES and p.serial_number]
-    if args.bridge_port:
-        bridges = [p for p in bridges if p.device == args.bridge_port]
-    return ([f"thermal-{bridges[0].serial_number}.json"] if len(bridges) == 1 else []) + ["thermal.json"]
+    return config.model_names(args.bridge_port)
 
 
 def _board_model(args):
-    for n in _model_names(args):
-        if (_config_dir() / n).exists():
-            return str(_config_dir() / n)
-    return None
+    return config.board_model(args.bridge_port)
 
 
 def _thermal(args, session, out):
@@ -342,7 +356,7 @@ def run(args, out=None):
         for line in audio.list_devices() or ["  (no sound card input found)"]:
             print(line)
         return 0
-    is_rtty = args.mode == "rtty"
+    is_rtty, is_iq = args.mode == "rtty", args.mode == "iq"
     if args.freq is None:
         raise SystemExit("espdr-tx: --freq is required (for example: espdr-tx -f 2350 -i speech.wav); see espdr-tx -h")
     if is_rtty:
@@ -350,7 +364,11 @@ def run(args, out=None):
     else:
         if args.text is not None or args.text_file is not None or args.repeat_count != 1:
             raise SystemExit("espdr-tx: --text, --text-file and --repeat-count belong to -m rtty")
-        if not args.input and not args.test_tone:
+        if is_iq:
+            _check_iq(args)
+        elif args.iq_rate is not None:
+            raise SystemExit("espdr-tx: --iq-rate belongs to -m iq")
+        elif not args.input and not args.test_tone:
             raise SystemExit("espdr-tx: give an audio source with -i (a WAV file, '-' for stdin, or 'soundcard') or use --test-tone")
     if not txlink.TX_MIN_HZ / 1e6 <= args.freq <= txlink.TX_MAX_HZ / 1e6:
         raise SystemExit(f"espdr-tx: {args.freq:g} MHz is outside 2320 .. 2450 MHz, the only range this transmitter sends in")
@@ -358,7 +376,7 @@ def run(args, out=None):
         raise SystemExit("espdr-tx: --update-rate must be 8000, 16000, 24000, 32000 or 40000")
     if not 0 <= args.carrier <= 0.9:
         raise SystemExit("espdr-tx: --carrier must be between 0 and 0.9")
-    plan = _rtty_plan(args) if is_rtty else None
+    plan = _rtty_plan(args) if is_rtty else _iq_plan(args) if is_iq else None
     try:
         mod = _modulator(args, args.power, plan)
     except ValueError as e:
@@ -376,6 +394,14 @@ def run(args, out=None):
         if abs(plan["miss_hz"]) > 20:
             print(f"warning: the PLL word cannot reach the wanted frequency here; the tones are {plan['miss_hz']:+.0f} Hz off. "
                   f"Tune your receiver to the tones above, or change -f by a few kHz", file=out)
+    elif is_iq:
+        lo_hz = plan["lo_hz"]
+        print(f"espdr-tx {__version__}: IQ input ({args.iq_rate:g} samples/s, {args.iq_format}) centred on {plan['center_hz'] / 1e6:.6f} MHz, "
+              f"power {args.power:g} dB, gain code {txmodes.peak_code(args.power)}, excursions up to {args.iq_deviation:g} Hz kept free, "
+              f"{args.update_rate} updates/s", file=out)
+        if abs(plan["miss_hz"]) > 20:
+            print(f"warning: the PLL word cannot reach the wanted frequency here; the signal is {plan['miss_hz']:+.0f} Hz off. "
+                  f"Change -f by a few kHz or tune your receiver to {plan['center_hz'] / 1e6:.6f} MHz", file=out)
     else:
         # the carrier the board has to produce: the request corrected for the crystal, moved a little if its PLL word is near a byte boundary
         want_hz = args.freq * 1e6 / (1.0 + args.ppm * 1e-6)
@@ -399,6 +425,9 @@ def run(args, out=None):
         if is_rtty:
             stream = rtty.OffsetStream(frames, args.update_rate, args.baud_rate, plan["shift_nominal"], args.reverse, args.edge)
             return stop, stream.blocks(), None, f"RTTY text, {len(text)} characters", stream
+        if is_iq:
+            src = iq.open_iq(args.input, args.iq_rate, args.iq_format)
+            return stop, src.blocks(), None, f"IQ {src.name} ({args.iq_rate:g} Hz, {args.iq_format})", src
         blocks, live, desc = _blocks(args, stop)
         return stop, blocks, live, desc, None
 
@@ -462,6 +491,12 @@ def selftest():
     rec = np.concatenate([m.process(0.8 * np.sin(2 * np.pi * 1000 * t)[i:i + 160]) for i in range(0, 8000, 160)])
     dev = np.abs((rec[len(rec) // 2:] & 0xFFFF).astype(np.uint16).view(np.int16)).max() * txmodes.Q4_HZ
     check("FM deviation", abs(dev - 2000) < 200, f"{dev:.0f} Hz for 0.8 of 2500 Hz (the band-pass is not flat at 1 kHz)")
+    audio_hz = 2500 * 0.8 * np.sin(2 * np.pi * 1000 * np.arange(8000) / 40000)
+    fm_iq = np.exp(2j * np.pi * np.cumsum(np.repeat(audio_hz, 2)) / 80000)                    # FM at 80 kHz, as an IQ file would hold it
+    im = polar.IqModulator(80000)
+    rec = np.concatenate([im.process(fm_iq[i:i + 1600]) for i in range(0, len(fm_iq), 1600)])
+    f = (rec[100:] & 0xFFFF).astype(np.uint16).view(np.int16) * txmodes.Q4_HZ
+    check("IQ input", np.sqrt(np.mean((f - audio_hz[100:len(f) + 100]) ** 2)) < 60, f"FM IQ comes back within {np.sqrt(np.mean((f - audio_hz[100:len(f) + 100]) ** 2)):.0f} Hz rms")
     check("power setting", [txmodes.peak_code(p) for p in (0, -6, -12)] == [64, 87, 107], "codes for 0, -6, -12 dB")
 
     text = "RYRY DE TEST 123. CQ (OK)?"
@@ -502,7 +537,7 @@ def main(argv=None):
     board.VERBOSE = bool(args.verbose)
     try:
         return run(args)
-    except (board.BoardError, txlink.TxError, audio.AudioError, nb.ProtocolError) as e:
+    except (board.BoardError, txlink.TxError, audio.AudioError, iq.IqError, nb.ProtocolError) as e:
         print(f"espdr-tx: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

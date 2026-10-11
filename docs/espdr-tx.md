@@ -5,18 +5,19 @@ Transmitter: FM and SSB voice on 13 cm from a WAV file, a pipe or a sound card, 
 This page is generated from `espdr-tx -h` (`scripts/gen-reference.py`); the text below is exactly what the command prints.
 
 ```text
-usage: espdr-tx [-h] [-V] [-f MHZ] [-m {fm,usb,lsb,rtty}] [-i SOURCE] [--test-tone HZ]
+usage: espdr-tx [-h] [-V] [-f MHZ] [-m {fm,usb,lsb,rtty,iq}] [-i SOURCE] [--test-tone HZ]
                 [--list-devices] [--rate HZ] [--channels N] [--format {f32le,s16le,u8}] [--loop]
                 [--gain DB] [--no-agc] [--power DB] [--ppm PPM] [--deviation HZ] [--no-preemph]
                 [--carrier FRACTION] [--ssb-delay UPDATES] [--text TEXT] [--text-file FILE]
                 [--mark-hz HZ] [--shift-hz HZ] [--baud-rate BAUD] [--reverse] [--edge BITS]
-                [--repeat-count N] [--repeat-interval SECONDS] [--duration SECONDS]
+                [--repeat-count N] [--repeat-interval SECONDS] [--iq-rate HZ]
+                [--iq-format {cf32,cs16,cs8}] [--iq-deviation HZ] [--duration SECONDS]
                 [--update-rate HZ] [--thermal {auto,off,sensor,nominal}] [--thermal-model FILE]
                 [--drift HZ] [--dry-run] [--accept-licence] [-q] [-v] [--port DEVICE]
                 [--bridge-port DEVICE] [--no-load] [--reload] [--native] [--image FILE]
                 [--restore] [--selftest]
 
-espdr-tx: transmit FM or SSB voice, or RTTY, from an ESP32-S3 board on the 13 cm band.
+espdr-tx: transmit FM or SSB voice, RTTY, or a constant-envelope IQ signal (M17, FSK, FM) from an ESP32-S3 board on the 13 cm band.
 
 options:
   -h, --help            show this help message and exit
@@ -25,10 +26,11 @@ options:
 
 what to send:
   -f, --freq MHZ        carrier frequency in MHz (2320 .. 2450); required
-  -m, --mode {fm,usb,lsb,rtty}
+  -m, --mode {fm,usb,lsb,rtty,iq}
                         fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone
-                        FSK, the audio, FM and SSB options and --duration do not apply (default
-                        fm)
+                        FSK; iq: a complex baseband signal with a constant envelope (M17, FSK, FM)
+                        from a file or a pipe, only its frequency is sent; for rtty and iq the
+                        audio, FM and SSB options and --duration do not apply (default fm)
 
 audio source:
   -i, --input SOURCE    a WAV file, '-' for a pipe on stdin (a WAV stream or raw samples), or
@@ -78,6 +80,16 @@ RTTY (-m rtty):
                         pause between two transmissions, 1 .. 86400; the transmitter is off in
                         between (default 10)
 
+IQ input (-m iq):
+  --iq-rate HZ          sample rate of the IQ input, at least the update rate; required with -m
+                        iq. The signal is centred on -f; its envelope is ignored
+  --iq-format {cf32,cs16,cs8}
+                        sample format of the IQ input: cf32 (float32 I and Q, GNU Radio complex),
+                        cs16 or cs8 (default cf32)
+  --iq-deviation HZ     the largest frequency excursion of the signal, 0 .. 15000: the transmitter
+                        keeps this much of its +-19 kHz range free when it moves the LO (default
+                        4000, enough for M17)
+
 session:
   --duration SECONDS    stop after this many seconds (default: until the source ends)
   --update-rate HZ      records per second sent to the chip, 8000 .. 40000 (default 40000)
@@ -117,6 +129,7 @@ examples:
   sox music.mp3 -t wav - | espdr-tx -f 2350 -i -             a WAV stream from a pipe
   espdr-tx -f 2350 --test-tone 1000 --duration 5             a 1 kHz tone for 5 seconds
   espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE TEST"       RTTY, 45.45 baud, 170 Hz shift (true FSK)
+  espdr-tx -f 2350 -m iq -i m17.cf32 --iq-rate 80000         a recorded constant-envelope IQ signal (M17, FSK, FM)
   espdr-tx -f 2350 -i speech.wav --dry-run                   show what would happen, send nothing
   espdr-tx --list-devices                                    list sound card inputs
 

@@ -157,3 +157,71 @@ def test_rtty_session_against_the_simulated_chip_and_repeat(tmp_path, monkeypatc
         f = instantaneous_frequency(ideal_polar(rec), 40000)
         assert rtty.decode_frequency(f, 40000) == text
         assert {int(r >> 16) & 0xFF for r in rec} - {127} == {txmodes.peak_code(0.0)}      # constant gain; 127 is the end record of the session
+
+
+# --- IQ input --------------------------------------------------------------------------------------------------------------------------
+
+IQ = ["-f", "2350", "-m", "iq", "--accept-licence"]
+
+
+def write_iq(path, freq=2000.0, seconds=1.5, rate=80000):
+    import numpy as np
+    x = np.exp(2j * np.pi * freq * np.arange(int(seconds * rate)) / rate).astype(np.complex64)
+    path.write_bytes(x.tobytes())
+    return path
+
+
+@pytest.mark.parametrize("extra,message", [
+    ([], "reads a file"),
+    (["--test-tone", "1000", "--iq-rate", "80000"], "reads a file"),
+    (["-i", "soundcard", "--iq-rate", "80000"], "reads a file"),
+    (["-i", "x.cf32"], "--iq-rate"),
+    (["-i", "x.cf32", "--iq-rate", "30000"], "at least the update rate"),
+    (["-i", "x.cf32", "--iq-rate", "80000", "--iq-deviation", "20000"], "--iq-deviation"),
+])
+def test_iq_refuses_bad_arguments(extra, message):
+    with pytest.raises(SystemExit) as e:
+        cli_tx.main(IQ + extra + ["--dry-run"])
+    assert message in str(e.value)
+
+
+def test_iq_options_do_not_belong_to_the_voice_modes():
+    with pytest.raises(SystemExit) as e:
+        cli_tx.main(["-f", "2350", "-i", "x.wav", "--iq-rate", "80000", "--dry-run", "--accept-licence"])
+    assert "belongs to -m iq" in str(e.value)
+
+
+def test_iq_dry_run_says_what_it_would_send(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    f = write_iq(tmp_path / "a.cf32")
+    called = []
+    monkeypatch.setattr("espdr.board.ensure", lambda *a, **k: called.append(1))
+    assert cli_tx.main(IQ + ["-i", str(f), "--iq-rate", "80000", "--dry-run", "--power", "-6"]) == 0
+    assert not called
+    err = capsys.readouterr().err
+    import re
+    assert "IQ input (80000 samples/s, cf32) centred on " in err and "dry run" in err and "IQ a.cf32" in err
+    assert abs(float(re.search(r"centred on ([0-9.]+) MHz", err).group(1)) - 2350.0) < 30e-6        # within a record unit (28.6 Hz)
+
+
+def test_iq_missing_file_is_a_clear_error(tmp_path, capsys):
+    assert cli_tx.main(IQ + ["-i", str(tmp_path / "nope.cf32"), "--iq-rate", "80000", "--dry-run"]) == 1
+    assert "cannot open" in capsys.readouterr().err
+
+
+def test_iq_session_against_the_simulated_chip_puts_the_signal_where_it_was_asked(tmp_path, monkeypatch, capsys):
+    import numpy as np
+    from espdr import nb, sim, txlink, txmodes
+    from helpers import ideal_polar, instantaneous_frequency
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    f = write_iq(tmp_path / "a.cf32", freq=2000.0, seconds=1.5)
+    esp = sim.SimTx(speed=1.0)
+    monkeypatch.setattr("espdr.board.ensure", lambda *a, **k: "sim")
+    monkeypatch.setattr("espdr.nb.open_link", lambda port: nb.Link(esp))
+    assert cli_tx.main(IQ + ["-i", str(f), "--iq-rate", "80000", "-q", "--power", "-6"]) == 0
+    plan = txlink.plan_lo(2350e6, 0.0, 4000.0)
+    assert (txlink.TX_OP_LO, plan["lo_hz"] // 100) in [(op, a) for op, a in esp.ops if op == txlink.TX_OP_LO]
+    rec = np.array(esp.played, dtype=np.uint32)[:-1]                       # without the end record
+    freq = instantaneous_frequency(ideal_polar(rec), 40000)[200:-200]
+    assert abs(np.median(freq) - (plan["static_hz"] + 2000.0)) < 30        # the tone sits 2 kHz above the planned centre
+    assert {int(r >> 16) & 0xFF for r in rec} == {txmodes.peak_code(-6.0)}
