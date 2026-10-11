@@ -1,6 +1,8 @@
 """The host side of the transmit protocol (firmware/protocol/transmit.h): set up a session, stream records, read the chip's status."""
+import collections
 import queue
 import struct
+import threading
 import time
 import zlib
 
@@ -141,62 +143,206 @@ class Session:
     def stream(self, records, target_fill=8000, on_status=None, stop=None, idle_s=0.002):
         """records: a queue.Queue of numpy uint32 arrays; None ends the transmission. stop: a threading.Event that ends it too.
         Returns the chip's summary dict."""
-        import serial
-        ser = self.ser
-        ser.timeout = idle_s
-        ser.write_timeout = 1.0
-        frames = Frames()
-        pending = None
-        sent_since = 0
-        fill = 0
-        ending = False
-        end_sent = False
-        t_last = time.monotonic()
-        end_by = None
+        self.ser.timeout = idle_s
+        self.ser.write_timeout = 1.0
+
+        def source():
+            try:
+                return records.get_nowait()
+            except queue.Empty:
+                return False
+
+        pump = _Pump(self, source, target_fill, on_status, stop)
         while True:
-            data = ser.read(ser.in_waiting or 1)
-            if data:
-                for kind, ev in frames.feed(data):
-                    if kind == "status":
-                        self.status = ev
-                        fill, sent_since = ev["fill"], 0
-                        if on_status:
-                            on_status(ev)
-                    elif ev["op"] == TX_OP_END:
-                        v = ev["value"]
-                        self.summary = dict(reason=v >> 24, underruns=(v >> 16) & 0xFF, late=v & 0xFFFF, status=ev["status"])
-                        return self.summary
-            now = time.monotonic()
-            if not ending and stop is not None and stop.is_set():
-                ending = True
-            if not end_sent:
-                room = target_fill - fill - sent_since
-                if room >= 256 or (ending and pending is None):
-                    if pending is None and not ending:
-                        try:
-                            item = records.get_nowait()
-                        except queue.Empty:
-                            item = False
-                        if item is None:
-                            ending = True
-                        elif item is not False:
-                            pending = item
-                    if pending is not None and len(pending):
-                        n = min(room, len(pending), 4096)
-                        try:
-                            ser.write(pending[:n].astype("<u4").tobytes())
-                        except serial.SerialTimeoutException:
-                            raise TxError("the chip does not take data any more (it stopped the transmission?)")
-                        sent_since += n
-                        pending = pending[n:] if n < len(pending) else None
-                        t_last = now
-                    elif ending and pending is None:
-                        import numpy as np
-                        code = 127
-                        ser.write(np.array([(code << 16) | (1 << 24)], dtype="<u4").tobytes())
-                        end_sent = True
-                        end_by = now + 5.0
-            if end_by and now > end_by:
-                raise TxError("the chip did not confirm the end of the transmission")
-            if now - t_last > 5.0 and not end_sent and fill == 0 and self.status is None:
-                raise TxError("the chip sends no status; is the transmitter firmware running?")
+            summary = pump.step()
+            if summary is not None:
+                return summary
+
+
+class _Pump:
+    """The work of one transmission, one non-blocking step at a time: read the chip's frames, keep its ring near `target_fill` records,
+    send the end record, wait for the summary. `source()` returns a numpy array of records, None when the data has ended, or False when
+    there is nothing right now. Shared by `Session.stream` (the caller's thread) and `Streamer` (a thread of its own)."""
+
+    def __init__(self, session, source, target_fill=8000, on_status=None, stop=None):
+        self.session, self.ser, self.source = session, session.ser, source
+        self.target_fill, self.on_status, self.stop = target_fill, on_status, stop
+        self.frames = Frames()
+        self.pending = None
+        self.sent_since = 0
+        self.fill = 0
+        self.ending = False
+        self.end_sent = False
+        self.t_last = time.monotonic()
+        self.end_by = None
+        self._abort = False
+
+    def abort(self):
+        """From any thread: drop what has not been sent and end the transmission at once (the end record goes out regardless of room)."""
+        self._abort = True
+
+    def step(self):
+        """One round: returns the chip's summary dict when the transmission is over, otherwise None. Raises TxError."""
+        import serial
+        if self._abort:
+            self.pending = None
+            self.ending = True
+            self._abort = False
+        ser = self.ser
+        data = ser.read(ser.in_waiting or 1)
+        if data:
+            for kind, ev in self.frames.feed(data):
+                if kind == "status":
+                    self.session.status = ev
+                    self.fill, self.sent_since = ev["fill"], 0
+                    if self.on_status:
+                        self.on_status(ev)
+                elif ev["op"] == TX_OP_END:
+                    v = ev["value"]
+                    self.session.summary = dict(reason=v >> 24, underruns=(v >> 16) & 0xFF, late=v & 0xFFFF, status=ev["status"])
+                    return self.session.summary
+        now = time.monotonic()
+        if not self.ending and self.stop is not None and self.stop.is_set():
+            self.ending = True
+        if not self.end_sent:
+            room = self.target_fill - self.fill - self.sent_since
+            if room >= 256 or (self.ending and self.pending is None):
+                if self.pending is None and not self.ending:
+                    item = self.source()
+                    if item is None:
+                        self.ending = True
+                    elif item is not False:
+                        self.pending = item
+                if self.pending is not None and len(self.pending):
+                    n = min(room, len(self.pending), 4096)
+                    try:
+                        ser.write(self.pending[:n].astype("<u4").tobytes())
+                    except serial.SerialTimeoutException:
+                        raise TxError("the chip does not take data any more (it stopped the transmission?)")
+                    self.sent_since += n
+                    self.pending = self.pending[n:] if n < len(self.pending) else None
+                    self.t_last = now
+                elif self.ending and self.pending is None:
+                    import numpy as np
+                    code = 127
+                    ser.write(np.array([(code << 16) | (1 << 24)], dtype="<u4").tobytes())
+                    self.end_sent = True
+                    self.end_by = now + 5.0
+        if self.end_by and now > self.end_by:
+            raise TxError("the chip did not confirm the end of the transmission")
+        if now - self.t_last > 5.0 and not self.end_sent and self.fill == 0 and self.session.status is None:
+            raise TxError("the chip sends no status; is the transmitter firmware running?")
+        return None
+
+
+class Streamer:
+    """A transmission driven by pushing: `push(records)` from any thread (it blocks while more than `max_buffered` records wait, so the
+    caller runs at the chip's pace), `finish()` ends it with the end record after everything pushed has played, `abort()` ends it at
+    once, `close()` always returns. A thread of its own talks to the chip, so the caller needs no loop. Start it after `Session.begin()`.
+    The carrier comes on when the chip's ring holds `TX_PREFILL` records (100 ms at 40000 a second), so the first 100 ms of what is
+    pushed is the latency from key to carrier. After `Session.begin()` the first 4000 records must arrive within 3 s, or the chip ends the
+    session without a carrier. `abort()` cannot be faster than the chip's ring: the end record queues behind what the chip holds
+    (`target_fill` records, 125 ms at the default), so an abort takes up to about that long to silence the carrier."""
+
+    def __init__(self, session, target_fill=5000, on_status=None, max_buffered=16384, idle_s=0.002):
+        self.session = session
+        self.max_buffered = max_buffered
+        self.error = None
+        self.summary = None
+        self._cv = threading.Condition()
+        self._buf = collections.deque()
+        self._n = 0
+        self._ending = False
+        self._dead = False
+        session.ser.timeout = idle_s
+        session.ser.write_timeout = 1.0
+        self._pump = _Pump(session, self._source, target_fill, on_status)
+        self._thread = threading.Thread(target=self._run, name="espdr-streamer", daemon=True)
+        self._thread.start()
+
+    # -- the thread of its own
+    def _source(self):
+        with self._cv:
+            if self._buf:
+                a = self._buf.popleft()
+                self._n -= len(a)
+                self._cv.notify_all()
+                return a
+            return None if self._ending else False
+
+    def _run(self):
+        try:
+            while True:
+                summary = self._pump.step()
+                if summary is not None:
+                    self.summary = summary
+                    return
+        except Exception as e:                  # noqa: BLE001 - handed to the caller by finish() and push()
+            self.error = e
+        finally:
+            with self._cv:
+                self._dead = True
+                self._buf.clear()
+                self._n = 0
+                self._cv.notify_all()
+
+    # -- the caller's side
+    @property
+    def alive(self):
+        return not self._dead
+
+    @property
+    def fill(self):
+        """The chip's ring fill in records, as of its last status frame."""
+        return self._pump.fill
+
+    def push(self, records, timeout=None):
+        """Queues records (numpy uint32). Blocks while the queue is full. Returns False if they were not taken (timeout, or the
+        transmission is over or ending)."""
+        import numpy as np
+        a = np.asarray(records, dtype=np.uint32)
+        if not len(a):
+            return True
+        end = None if timeout is None else time.monotonic() + timeout
+        with self._cv:
+            while self._n >= self.max_buffered and not self._dead and not self._ending:
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
+                    return False
+                self._cv.wait(left if left is not None else 0.1)
+            if self._dead or self._ending:
+                return False
+            self._buf.append(a)
+            self._n += len(a)
+        return True
+
+    def finish(self, timeout=10.0):
+        """Ends the transmission after everything pushed has been played; returns the chip's summary dict. Raises TxError if the
+        chip does not confirm within `timeout` seconds or the transmission broke down before."""
+        with self._cv:
+            self._ending = True
+            self._cv.notify_all()
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            self.abort()
+            self._thread.join(2.0)
+            raise TxError("the chip did not confirm the end of the transmission in time")
+        if self.error is not None:
+            raise self.error if isinstance(self.error, TxError) else TxError(str(self.error))
+        return self.summary
+
+    def abort(self):
+        """Ends the transmission at once; what has not been sent is dropped. Returns immediately (see close())."""
+        self._pump.abort()
+        with self._cv:
+            self._ending = True
+            self._buf.clear()
+            self._n = 0
+            self._cv.notify_all()
+
+    def close(self, timeout=5.0):
+        """Aborts if still running and waits for the thread, at most `timeout` seconds. Never raises. Returns the summary or None."""
+        if self._thread.is_alive():
+            self.abort()
+            self._thread.join(timeout)
+        return self.summary

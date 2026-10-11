@@ -44,6 +44,9 @@ class SimTx:
 
     def read(self, n):
         self._advance()
+        if not self.out and self.timeout:
+            time.sleep(self.timeout)                  # a real port blocks until there is data or the timeout is over
+            self._advance()
         chunk = bytes(self.out[:n])
         del self.out[:n]
         return chunk
