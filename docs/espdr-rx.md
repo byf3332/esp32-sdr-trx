@@ -6,9 +6,9 @@ This page is generated from `espdr-rx -h` (`scripts/gen-reference.py`); the text
 
 ```text
 usage: espdr-rx [-h] [-V] [--listen HOST:PORT] [--decim {3,4}] [--ppm PPM] [--gain N]
-                [--gain-min N] [--gain-max N] [--no-dc-block] [--port DEVICE]
-                [--bridge-port DEVICE] [--no-load] [--reload] [--native] [--image FILE] [--flash]
-                [--yes] [-v] [--selftest]
+                [--gain-min N] [--gain-max N] [--tuner {r820t,unknown}] [--no-dc-block]
+                [--port DEVICE] [--bridge-port DEVICE] [--no-load] [--reload] [--native]
+                [--image FILE] [--flash] [--yes] [-v] [--selftest]
 
 espdr-rx: use an ESP32-S3 board as a receiver for SDR++ and other rtl_tcp programs (1.84 .. 2.79 GHz, 250 or 333 ksps).
 
@@ -27,6 +27,11 @@ rtl_tcp server:
   --gain N              gain selector 0..127 until the client sets one (default 60)
   --gain-min N          selector for a client gain of 0 dB (default 30)
   --gain-max N          selector for a client gain of 49.6 dB (default 80)
+  --tuner {r820t,unknown}
+                        tuner type that the rtl_tcp greeting names: unknown (default) lets clients
+                        tune the ESP's whole range 1.84 .. 2.79 GHz but gives them no gain table;
+                        r820t is the old greeting (clients that trust it refuse everything above
+                        1.77 GHz)
   --no-dc-block         keep the radio's DC offset
 
 board:

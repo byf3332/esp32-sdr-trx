@@ -157,3 +157,15 @@ def test_rtty_session_against_the_simulated_chip_and_repeat(tmp_path, monkeypatc
         f = instantaneous_frequency(ideal_polar(rec), 40000)
         assert rtty.decode_frequency(f, 40000) == text
         assert {int(r >> 16) & 0xFF for r in rec} - {127} == {txmodes.peak_code(0.0)}      # constant gain; 127 is the end record of the session
+
+
+def test_rtl_tcp_greeting_names_the_tuner():
+    import struct
+    from espdr import rtltcp
+    assert rtltcp.DEFAULT_TUNER == "unknown"
+    assert rtltcp.greeting("unknown") == b"RTL0" + struct.pack(">II", 0, 0)    # no tuner range, no gain table
+    assert rtltcp.greeting("r820t") == b"RTL0" + struct.pack(">II", 5, 29)     # the greeting before 0.x: R820T with 29 gain steps
+    assert cli_rx.build_parser().parse_args([]).tuner == "unknown"
+    assert cli_rx.build_parser().parse_args(["--tuner", "r820t"]).tuner == "r820t"
+    with pytest.raises(SystemExit):
+        cli_rx.build_parser().parse_args(["--tuner", "e4000"])

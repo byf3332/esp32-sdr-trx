@@ -75,6 +75,13 @@ offset is removed; the client's gain (0 to 49.6 dB) is mapped to the ESP's gain 
 the range are clamped, and a frequency the PLL does not lock at is refused with a message, after which the bridge stays on the last frequency that worked.
 pluto-advanced-rx and other programs that let you choose an RTL-SDR with a `host:port` connection work the same way.
 
+**The tuner type in the greeting.** An `rtl_tcp` server greets every client with a tuner type and a number of gain steps, and nothing about a frequency range.
+A client that trusts the tuner type applies that tuner's range. Until now the bridge claimed an R820T (24 to 1766 MHz), and such clients (sdrmm, for
+example) refused every frequency the ESP can receive. The bridge now greets as an **unknown tuner** by default (`--tuner unknown`): clients that check the
+range stop doing so. The price is that a client has no gain table then, so its gain slider is missing or does nothing; set the gain with `--gain`
+instead. `--tuner r820t` brings the old greeting back (a gain slider, and the range limit). SDR++ and pluto-advanced-rx do not use the tuner type and behave the same
+either way. gqrx (through gr-osmosdr) reports the range of an E4000 (52 MHz to 2.2 GHz) for an unknown tuner, which stops short of the 13 cm band; whether gqrx enforces that range was not tested, and no tuner type in gr-osmosdr covers 2.4 GHz.
+
 ### GNU Radio
 
 ```sh

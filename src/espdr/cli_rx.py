@@ -31,6 +31,9 @@ def build_parser():
     srv.add_argument("--gain", type=int, default=60, metavar="N", help="gain selector 0..127 until the client sets one (default 60)")
     srv.add_argument("--gain-min", type=int, default=30, metavar="N", help="selector for a client gain of 0 dB (default 30)")
     srv.add_argument("--gain-max", type=int, default=80, metavar="N", help="selector for a client gain of 49.6 dB (default 80)")
+    srv.add_argument("--tuner", choices=sorted(rtltcp.TUNERS), default=rtltcp.DEFAULT_TUNER,
+                     help="tuner type that the rtl_tcp greeting names: unknown (default) lets clients tune the ESP's whole range 1.84 .. 2.79 GHz but "
+                          "gives them no gain table; r820t is the old greeting (clients that trust it refuse everything above 1.77 GHz)")
     srv.add_argument("--no-dc-block", action="store_true", help="keep the radio's DC offset")
     brd = p.add_argument_group("board")
     brd.add_argument("--port", metavar="DEVICE", help="the board's native USB port (default: find it)")
@@ -65,7 +68,7 @@ def run(args):
         return link
 
     bridge = rtltcp.Bridge(open_link, (host, port), ppm=args.ppm, gain=args.gain, gain_range=(args.gain_min, args.gain_max),
-                           dc_block=not args.no_dc_block, decim=args.decim)
+                           dc_block=not args.no_dc_block, decim=args.decim, tuner=args.tuner)
     rate = rtltcp.SRC_RATES[args.decim] / 1e3
     rtltcp.log(f"espdr-rx {__version__}: receiver on {native_port}; rtl_tcp server on {bridge.address[0]}:{bridge.address[1]}, "
                f"{rate:.0f} ksps, ppm {args.ppm:g}. In SDR++ choose RTL-TCP and press play. Ctrl-C ends.")

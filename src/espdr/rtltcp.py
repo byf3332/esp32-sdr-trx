@@ -19,7 +19,19 @@ import numpy as np
 
 from . import nb
 
-HEADER = b"RTL0" + struct.pack(">II", 5, 29)  # "R820T" tuner with 29 gain steps: what clients expect to see
+# The greeting names a tuner type and its number of gain steps; it cannot name a frequency range, so a client that trusts it applies the range of
+# that tuner. An R820T tunes 24 to 1766 MHz, the ESP receives 1.84 to 2.79 GHz: clients like sdrmm then refuse every frequency the ESP can
+# receive. "unknown" (code 0, no gain steps) makes them skip the range check, at the price of the gain control, which needs a tuner's gain
+# table. "r820t" keeps the old greeting for clients that need it.
+TUNERS = {"unknown": (0, 0), "r820t": (5, 29)}   # name -> (rtl_tcp tuner code, gain steps)
+DEFAULT_TUNER = "unknown"
+
+
+def greeting(tuner=DEFAULT_TUNER):
+    """The 12 bytes a server sends first: b"RTL0", tuner type, number of gain steps (both big-endian)."""
+    return b"RTL0" + struct.pack(">II", *TUNERS[tuner])
+
+
 SRC_RATES = {3: 1e6 / 3, 4: 250_000.0}        # ESP output per --decim
 LO_MIN, LO_MAX = 1_841_666_667, 2_790_000_000  # ESP tuning range, Hz (ESP_LO_MIN_HZ / ESP_LO_MAX_HZ in protocol/control.h)
 # R820T gain table in tenths of a dB, for rtl_tcp's "set gain by index"
@@ -169,7 +181,7 @@ class Session:
         self.dropped = 0
         conn.settimeout(None)
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        conn.sendall(HEADER)
+        conn.sendall(bridge.greeting)
         threading.Thread(target=self._read, daemon=True).start()
         threading.Thread(target=self._write, daemon=True).start()
 
@@ -218,8 +230,9 @@ class Session:
 
 # --- bridge -----------------------------------------------------------------------------------------------
 class Bridge:
-    def __init__(self, open_link, listen, ppm=0.0, gain=60, gain_range=(30, 80), dc_block=True, decim=4):
+    def __init__(self, open_link, listen, ppm=0.0, gain=60, gain_range=(30, 80), dc_block=True, decim=4, tuner=DEFAULT_TUNER):
         self.open_link = open_link
+        self.greeting = greeting(tuner)
         self.decim, self.src_rate = decim, SRC_RATES[decim]
         self.base_ppm = ppm  # --ppm: this unit's crystal; a client's ppm command adds to it
         self.params = Params(2_400_000_000, ppm, gain, 2_400_000)
@@ -521,9 +534,28 @@ def _drain(sock, seconds):
 
 
 def selftest():
-    ok = _selftest(4) & _selftest(3)
+    ok = _selftest(4) & _selftest(3) & _selftest_greeting()
     print("SELFTEST", "PASSED" if ok else "FAILED")
     return 0 if ok else 1
+
+
+def _selftest_greeting():
+    """The greeting of both --tuner choices, as a client sees it on the socket."""
+    ok = True
+    for tuner, want in (("unknown", (0, 0)), ("r820t", (5, 29))):
+        bridge = Bridge(lambda: nb.Link(SimEsp(rf_hz=2_400_050_000)), ("127.0.0.1", 0), tuner=tuner)
+        threading.Thread(target=bridge.run, daemon=True).start()
+        s = socket.create_connection(bridge.address[:2], timeout=5)
+        hdr = b""
+        while len(hdr) < 12:
+            hdr += s.recv(12 - len(hdr))
+        good = hdr == b"RTL0" + struct.pack(">II", *want) and hdr == greeting(tuner)
+        print(f"greeting --tuner {tuner}: {'OK' if good else 'FAIL'} {hdr!r}")
+        ok &= good
+        s.close()
+        bridge.quit = True
+        time.sleep(0.3)
+    return ok
 
 
 def _selftest(decim):
@@ -551,7 +583,7 @@ def _selftest(decim):
         s.sendall(struct.pack(">BI", c, p & 0xFFFFFFFF))
 
     s, hdr = connect()
-    check("header", hdr == b"RTL0" + struct.pack(">II", 5, 29), repr(hdr))
+    check("header", hdr == b"RTL0" + struct.pack(">II", 0, 0), repr(hdr))
     for rate in (src, 1_024_000, 2_400_000):
         cmd(s, CMD_RATE, rate)
         cmd(s, CMD_FREQ, 2_400_000_000)
