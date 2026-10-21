@@ -24,7 +24,7 @@ options:
   --selftest            check the signal processing without hardware and exit
 
 what to send:
-  -f, --freq MHZ        carrier frequency in MHz (2320 .. 2450); required
+  -f, --freq MHZ        carrier frequency in MHz (2300 .. 2450); required
   -m, --mode {fm,usb,lsb,rtty}
                         fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone
                         FSK, the audio, FM and SSB options and --duration do not apply (default

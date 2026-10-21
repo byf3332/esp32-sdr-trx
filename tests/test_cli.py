@@ -28,7 +28,7 @@ def test_tx_needs_a_frequency_and_a_source(capsys):
     assert "audio source" in str(e.value)
 
 
-@pytest.mark.parametrize("f", ["2000", "2500", "2319.9", "2450.1"])
+@pytest.mark.parametrize("f", ["2000", "2500", "2299.9", "2450.1"])
 def test_tx_refuses_frequencies_outside_the_band(f):
     with pytest.raises(SystemExit) as e:
         cli_tx.main(["-f", f, "--test-tone", "1000", "--dry-run", "--accept-licence"])
@@ -52,6 +52,12 @@ def test_tx_dry_run_touches_no_board(tmp_path, monkeypatch, capsys):
     assert not called
     err = capsys.readouterr().err
     assert "USB voice" in err and "dry run" in err
+
+
+def test_tx_accepts_the_2300_mhz_lower_edge(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cli_tx.main(["-f", "2300", "--test-tone", "1000", "--dry-run", "--accept-licence"]) == 0
+    assert "dry run" in capsys.readouterr().err
 
 
 def test_rx_selftest_runs():

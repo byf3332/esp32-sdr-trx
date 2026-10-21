@@ -19,7 +19,7 @@
  */
 #pragma once
 
-#define TX_OP_LO 40    /* LO frequency in units of 100 Hz (2320 .. 2450 MHz) */
+#define TX_OP_LO 40    /* LO frequency in units of 100 Hz (2300 .. 2450 MHz) */
 #define TX_OP_RATE 41  /* records per second, 8000 .. 40000 (default 40000) */
 #define TX_OP_DRIFT 42 /* thermal drift to cancel at switch-on, signed Hz (default 0), time constant 32768 / rate seconds */
 #define TX_OP_LIMIT 43 /* longest session, seconds (1 .. 3600, default 600) */
@@ -28,7 +28,7 @@
 #define TX_OP_TEMP 46  /* the chip's temperature: arg = range 0..4 of its sensor (2 is the SDK default); value = range << 24 | sum of 16 raw readings.
                           Degrees C = 0.4386 * (sum / 16) - 27.88 * offset - 20.52 with the offsets -2, -1, 0, 1, 2 of the ranges. Between sessions only. */
 
-#define TX_MIN_HZ 2320000000u
+#define TX_MIN_HZ 2300000000u
 #define TX_MAX_HZ 2450000000u
 #define TX_LOW_MARGIN 48 /* the low byte of the PLL word must lie in 48 .. 207 so that the offsets (clamped to +-44) never carry */
 #define TX_MAX_STEPS 44

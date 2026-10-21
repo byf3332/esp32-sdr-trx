@@ -1,0 +1,33 @@
+name: Build TX firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-tx:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.5
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build TX image
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          make -C firmware TX=1 NARROWBAND=1 BUILD=build-tx ESPTOOL="python -m esptool"
+          mkdir -p out
+          cp firmware/build-tx/iq-source.bin out/esp32-sdr-trx-tx.bin
+          cp firmware/flash/bootloader.bin firmware/flash/partition-table.bin out/
+          (cd out && sha256sum * > SHA256SUMS)
+
+      - name: Upload TX firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-sdr-trx-tx-${{ github.sha }}
+          path: out
+          if-no-files-found: error

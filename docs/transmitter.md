@@ -1,6 +1,6 @@
 # The transmitter: FM and SSB voice and RTTY from an ESP32-S3
 
-`espdr-tx` sends narrowband FM or single-sideband voice, or RTTY text, from an ESP32-S3 board on the 13 cm band (2320 to 2450 MHz). It uses the chip's Wi-Fi test tone, which can be steered in frequency and amplitude (polar modulation), and that is enough for voice and for RTTY.
+`espdr-tx` sends narrowband FM or single-sideband voice, or RTTY text, from an ESP32-S3 board on the 13 cm band (2300 to 2450 MHz). It uses the chip's Wi-Fi test tone, which can be steered in frequency and amplitude (polar modulation), and that is enough for voice and for RTTY.
 The chip also has an I/Q playback engine (see the research notes) that this transmitter does not use. This page is the user guide. The command line reference
 is [espdr-tx.md](espdr-tx.md) (and `espdr-tx -h`), how it works is in [internals.md](internals.md), and every measurement is in
 [the research notes](research/TX-RESEARCH.md).
@@ -13,7 +13,7 @@ is [espdr-tx.md](espdr-tx.md) (and `espdr-tx -h`), how it works is in [internals
 * **The signal is not that of a transceiver.** The power is not calibrated: it is some microwatts at the antenna of a plain dev board (an
   estimate from a PlutoSDR 50 cm away; the uncertainty is ±10 dB). Harmonics and spurious emissions were **not measured**. The board's
   antenna is made for Wi-Fi. Do not connect an amplifier or an antenna of gain without measuring what comes out of it.
-* **The firmware only sends inside 2320 to 2450 MHz** and ends every transmission itself if the host stops sending for half a second
+* **The firmware only sends inside 2300 to 2450 MHz** and ends every transmission itself if the host stops sending for half a second
   (tested by killing the tool in the middle of a transmission: the carrier was gone 0.54 s later).
 * It is experimental and was tested on one board. Voice and RTTY only: no other data modes, no receive while transmitting.
 
@@ -165,7 +165,7 @@ muted microphone or the wrong input. A sound card's clock differs slightly from 
 
 ## Limits
 
-* One board, one host. Frequencies 2320 to 2450 MHz only. Voice and RTTY only.
+* One board, one host. Frequencies 2300 to 2450 MHz only. Voice and RTTY only.
 * Not calibrated, harmonics not measured, no output filter: do not use it near sensitive services, and keep it short and low.
 * The PLL steps are 458 Hz, so FM and SSB are quantised in frequency; error feedback pushes the error out of the voice band (SINAD about 19 to 31 dB
   in the voice band, which is why it sounds like a plain NBFM or SSB radio and not like a broadcast).
@@ -182,5 +182,5 @@ muted microphone or the wrong input. A sound card's clock differs slightly from 
 | SSB sounds like noise | The USB dial is not on the carrier (see *Tuning*), or the demodulator is LSB, or the audio level is too low: watch the input level in the progress line. |
 | *almost no audio arrives* | Wrong or muted input. `espdr-tx --list-devices`, then `-i soundcard:NUMBER`. A laptop microphone is quiet (the progress line showed -36 to -58 dBFS while speaking); the speech AGC raises that, `--gain 10` raises it further. |
 | *the chip does not take data any more* | The chip ended the transmission (watchdog, limit) or the cable was disturbed. Run again. |
-| *the PLL did not lock at this frequency* | Rare inside 2320 to 2450 MHz on the tested board. Try 1 kHz away, or replug the board. |
+| *the PLL did not lock at this frequency* | Rare at the tested frequencies inside 2300 to 2450 MHz. Try 1 kHz away, or replug the board. |
 | underruns | The computer could not keep up (a slow sound card driver or a busy USB hub). Use `-q` and a direct USB port. |

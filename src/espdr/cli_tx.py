@@ -15,7 +15,7 @@ LICENCE_NOTICE = """\
 Transmitting takes an amateur radio licence, and you are responsible for what you send. This transmitter is a Wi-Fi chip's
 test tone, steered in frequency and amplitude; it was measured on one board only. Its power is not calibrated (some microwatts
 at the antenna of a plain dev board, an estimate), its harmonics and spurious emissions were not measured, and its frequency
-is only as good as the board's crystal (up to +-24 kHz; correct it with --ppm). It sends only inside 2320..2450 MHz.
+is only as good as the board's crystal (up to +-24 kHz; correct it with --ppm). It sends only inside 2300..2450 MHz.
 """
 
 EPILOG = """\
@@ -57,7 +57,7 @@ def build_parser():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-V", "--version", action="version", version=f"espdr-tx {__version__}")
     main = p.add_argument_group("what to send")
-    main.add_argument("-f", "--freq", type=float, metavar="MHZ", help="carrier frequency in MHz (2320 .. 2450); required")
+    main.add_argument("-f", "--freq", type=float, metavar="MHZ", help="carrier frequency in MHz (2300 .. 2450); required")
     main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb", "rtty"), default="fm",
                       help="fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone FSK, the audio, FM and SSB options "
                            "and --duration do not apply (default fm)")
@@ -202,7 +202,7 @@ def _rtty_plan(args):
     ppm = 1.0 + args.ppm * 1e-6
     low = args.freq * 1e6 + args.mark_hz
     if low < txlink.TX_MIN_HZ or low + args.shift_hz > txlink.TX_MAX_HZ:
-        raise SystemExit(f"espdr-tx: the tones ({low / 1e6:.6f} and {(low + args.shift_hz) / 1e6:.6f} MHz) are outside 2320 .. 2450 MHz")
+        raise SystemExit(f"espdr-tx: the tones ({low / 1e6:.6f} and {(low + args.shift_hz) / 1e6:.6f} MHz) are outside 2300 .. 2450 MHz")
     lo_hz, _ = txlink.choose_lo(low / ppm)
     lo_real = txlink.word_hz(txlink.lo_word(lo_hz)) * ppm
     unit = txmodes.Q4_HZ * ppm                                          # one record unit on the air
@@ -353,7 +353,7 @@ def run(args, out=None):
         if not args.input and not args.test_tone:
             raise SystemExit("espdr-tx: give an audio source with -i (a WAV file, '-' for stdin, or 'soundcard') or use --test-tone")
     if not txlink.TX_MIN_HZ / 1e6 <= args.freq <= txlink.TX_MAX_HZ / 1e6:
-        raise SystemExit(f"espdr-tx: {args.freq:g} MHz is outside 2320 .. 2450 MHz, the only range this transmitter sends in")
+        raise SystemExit(f"espdr-tx: {args.freq:g} MHz is outside 2300 .. 2450 MHz, the only range this transmitter sends in")
     if not 8000 <= args.update_rate <= 40000 or args.update_rate % 8000:
         raise SystemExit("espdr-tx: --update-rate must be 8000, 16000, 24000, 32000 or 40000")
     if not 0 <= args.carrier <= 0.9:
