@@ -2,6 +2,9 @@ name: Build TX firmware
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - tx-2300
 
 permissions:
   contents: read
